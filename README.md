@@ -27,11 +27,17 @@ the local db.
   selling at `high-1`; ranks by estimated GP/hr with guards for stale quotes,
   one-sided markets, and too-good-to-be-true margins. Tunable constants are
   documented at the top of the file.
+- `flipping/stability.py` — timeseries z-score check on top candidates:
+  rejects flips whose entry price chases a spike or whose exit price implies
+  a crash in progress. Per-item timeseries fetches are cached in SQLite.
+
+Ingestion runs every 5 minutes via launchd
+(`~/Library/LaunchAgents/com.tommylu.flipping-ingest.plist`, logs in `logs/`).
 
 ## Roadmap
 
 1. ~~Ingestion + heuristic ranker v1~~ (done)
-2. Timeseries-based stability/volatility scoring; backtest harness over
+2. ~~Timeseries stability scoring~~ (done) — remaining: backtest harness over
    accumulated snapshots; tune `CAPTURE_FRACTION` against observed fills
 3. Suggestion API service: full account state in → single BUY/SELL/ABORT/WAIT
    action out (protocol modeled on the Flipping Copilot client's protobuf)

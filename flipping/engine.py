@@ -17,8 +17,9 @@ Guards against the classic data traps:
 """
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from . import stability
 from .ge_tax import flip_margin
 
 # Fraction of one side's hourly flow we assume our offer captures.
@@ -32,6 +33,8 @@ MAX_QUOTE_AGE_S = 30 * 60
 MAX_MARGIN_RATIO = 0.12
 # Never plan to absorb more than this share of one side's hourly volume.
 MAX_VOLUME_SHARE = 0.25
+# How many top candidates get the (per-item, cached) timeseries stability check.
+STABILITY_CHECK_TOP = 40
 
 
 @dataclass
@@ -48,6 +51,8 @@ class FlipCandidate:
     gp_per_hour: int
     hourly_buy_side_vol: int   # lowPriceVolume: how fast our buy fills
     hourly_sell_side_vol: int  # highPriceVolume: how fast our sell fills
+    stability: stability.StabilityResult = field(
+        default_factory=lambda: stability.StabilityResult(True, "unchecked: below check depth"))
 
 
 def rank_flips(conn, cash: int, f2p_only: bool = False,
@@ -127,4 +132,17 @@ def rank_flips(conn, cash: int, f2p_only: bool = False,
         ))
 
     candidates.sort(key=lambda c: c.gp_per_hour, reverse=True)
+
+    for c in candidates[:STABILITY_CHECK_TOP]:
+        series = stability.get_timeseries_cached(conn, c.item_id)
+        c.stability = stability.assess(c.buy_price, c.sell_price, series)
+
     return candidates
+
+
+def stable_flips(conn, **kwargs) -> tuple[list[FlipCandidate], list[FlipCandidate]]:
+    """(passing, rejected) split of ranked candidates by stability check."""
+    ranked = rank_flips(conn, **kwargs)
+    passing = [c for c in ranked if c.stability.ok]
+    rejected = [c for c in ranked if not c.stability.ok]
+    return passing, rejected

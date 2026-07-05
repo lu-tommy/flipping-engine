@@ -33,8 +33,9 @@ def cmd_ingest(args) -> None:
 
 def cmd_top(args) -> None:
     conn = db.connect(args.db)
-    flips = engine.rank_flips(conn, cash=parse_gp(args.cash),
-                              f2p_only=args.f2p, min_profit=parse_gp(args.min_profit))
+    flips, rejected = engine.stable_flips(conn, cash=parse_gp(args.cash),
+                                          f2p_only=args.f2p,
+                                          min_profit=parse_gp(args.min_profit))
     flips = flips[: args.limit]
     if not flips:
         print("No candidates. Run `ingest` first or relax filters.")
@@ -50,6 +51,11 @@ def cmd_top(args) -> None:
               f"{c.roundtrip_minutes:>8.1f} {fmt_gp(c.gp_per_hour):>9} "
               f"{c.hourly_buy_side_vol:>6}/{c.hourly_sell_side_vol:<6}")
 
+    if args.show_rejected and rejected:
+        print(f"\nRejected by stability check ({len(rejected)}):")
+        for c in rejected:
+            print(f"  {c.name:<32} {fmt_gp(c.gp_per_hour):>9} gp/hr  -- {c.stability.reason}")
+
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="flipping", description="OSRS flip suggestion engine")
@@ -63,6 +69,8 @@ def main() -> None:
     top.add_argument("--limit", type=int, default=20)
     top.add_argument("--f2p", action="store_true", help="free-to-play items only")
     top.add_argument("--min-profit", default="0", help="minimum estimated total profit")
+    top.add_argument("--show-rejected", action="store_true",
+                     help="also list candidates rejected by the stability check")
 
     args = p.parse_args()
     {"ingest": cmd_ingest, "top": cmd_top}[args.command](args)
