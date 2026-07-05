@@ -23,11 +23,23 @@ from dataclasses import dataclass, field
 from . import stability
 from .ge_tax import flip_margin
 
-# Fraction of one side's hourly flow we assume our offer captures.
-# Calibrated 2026-07-05: at 0.10 the backtest showed real roundtrips running
-# ~3.6x slower than predicted (43% fill rate within 8h). 0.10/3.6 ~= 0.03.
-# Re-run `cli backtest` after data accumulates and adjust.
-CAPTURE_FRACTION = 0.03
+# Fraction of one side's hourly flow we assume our offer captures WHEN the
+# market price touches our level. The earlier 0.03 "calibration" conflated two
+# effects: the backtest's slowness came mostly from waiting for price to cross
+# our quotes, which v3 now models explicitly via touch fractions — so capture
+# returns to 0.10. Real fills logged via the tracker are the true calibrator.
+CAPTURE_FRACTION = 0.10
+# v3 percentile pricing: quote near the edges of the recent price
+# distribution — the spread IS the flip profit — and account for the waiting
+# via touch fractions instead of surrendering margin. p25 of lows ~= the
+# typical bid edge without chasing single-trade outliers.
+BUY_PERCENTILE = 0.25
+SELL_PERCENTILE = 0.75
+# Quick mode steps slightly inside the edges: a bit less margin, faster touch.
+QUICK_BUY_PERCENTILE = 0.35
+QUICK_SELL_PERCENTILE = 0.65
+# How many coarse-ranked candidates get timeseries-based deep pricing.
+DEEP_PRICE_TOP = 60
 # Floor on estimated round-trip so thin items don't show absurd GP/hr.
 MIN_ROUNDTRIP_HOURS = 5 / 60
 # Quotes older than this are considered stale and the item is skipped.
@@ -263,11 +275,93 @@ def rank_flips(conn, cash: int, f2p_only: bool = False,
 
     candidates.sort(key=lambda c: c.gp_per_hour, reverse=True)
 
-    for c in candidates[:STABILITY_CHECK_TOP]:
-        series = stability.get_timeseries_cached(conn, c.item_id)
-        c.stability = stability.assess(c.buy_price, c.sell_price, series)
+    for c in candidates[:DEEP_PRICE_TOP]:
+        _deep_reprice(conn, c, cash, max_roundtrip_minutes, prior_fill_rate)
 
+    candidates.sort(key=lambda c: c.gp_per_hour, reverse=True)
     return candidates
+
+
+def _percentile(sorted_vals: list, q: float):
+    return sorted_vals[min(len(sorted_vals) - 1, max(0, int(q * len(sorted_vals))))]
+
+
+def _deep_reprice(conn, c: "FlipCandidate", cash: int,
+                  max_roundtrip_minutes: float | None, prior_fill_rate: float) -> None:
+    """Replace coarse latest-quote pricing with percentile pricing from the
+    item's recent 5m price distribution (v3).
+
+    Prices are chosen for fill velocity: a bid at the p55 of recent lows is
+    fillable in ~55% of 5m windows. Fill-rate estimates are scaled by those
+    touch fractions — this models the price-crossing wait that the backtest
+    exposed, instead of blaming it on a low capture fraction.
+    """
+    quick = max_roundtrip_minutes is not None
+    series = stability.get_timeseries_cached(conn, c.item_id)
+    if not series:
+        c.stability = stability.StabilityResult(True, "unchecked: no timeseries")
+        return  # keep coarse numbers
+
+    recent = series[-288:]  # ~24h of 5m buckets
+    lows = sorted(b["avgLowPrice"] for b in recent if b.get("avgLowPrice"))
+    highs = sorted(b["avgHighPrice"] for b in recent if b.get("avgHighPrice"))
+    if len(lows) < 12 or len(highs) < 12:
+        c.stability = stability.StabilityResult(False, "too little trade history")
+        return
+
+    buy = _percentile(lows, QUICK_BUY_PERCENTILE if quick else BUY_PERCENTILE)
+    sell = _percentile(highs, QUICK_SELL_PERCENTILE if quick else SELL_PERCENTILE)
+    if buy > cash:
+        c.stability = stability.StabilityResult(False, "buy price above cash stack")
+        return
+    margin = flip_margin(buy, sell, c.name)
+    if margin < 1:
+        c.stability = stability.StabilityResult(False, "no margin at velocity prices")
+        return
+    if margin / buy > MAX_MARGIN_RATIO:
+        c.stability = stability.StabilityResult(False, "margin too good to be true")
+        return
+
+    # crash guard: if the market's current highs sit below our ask, the exit
+    # price is historical fiction right now
+    last_highs = [b["avgHighPrice"] for b in recent[-3:] if b.get("avgHighPrice")]
+    if last_highs and max(last_highs) < sell:
+        c.stability = stability.StabilityResult(False, "market trading below target sell")
+        return
+
+    touch_buy = sum(1 for v in lows if v <= buy) / len(lows)
+    touch_sell = sum(1 for v in highs if v >= sell) / len(highs)
+    buy_rate = CAPTURE_FRACTION * c.hourly_buy_side_vol * touch_buy    # items/hour
+    sell_rate = CAPTURE_FRACTION * c.hourly_sell_side_vol * touch_sell
+    if buy_rate <= 0 or sell_rate <= 0:
+        c.stability = stability.StabilityResult(False, "one-sided at these prices")
+        return
+
+    quantity = min(
+        c.quantity if c.quantity > 0 else 1,   # coarse caps (limit/cash/volume share)
+        max(1, int((max_roundtrip_minutes / 60) / (1 / buy_rate + 1 / sell_rate)))
+        if quick else 10**9,
+        cash // buy,
+    )
+    roundtrip_hours = max(quantity / buy_rate + quantity / sell_rate, MIN_ROUNDTRIP_HOURS)
+    if quick and roundtrip_hours * 60 > max_roundtrip_minutes * 1.5:
+        c.stability = stability.StabilityResult(False, "too slow even at velocity prices")
+        return
+
+    est_profit = margin * quantity
+    fill = c.fill_rate if c.fill_rate is not None else prior_fill_rate
+    # abort-and-reprice model: an unfilled flip is re-priced and usually still
+    # completes at reduced margin, not a total loss — so soften the penalty
+    ev = est_profit * (0.5 + 0.5 * fill)
+
+    c.buy_price = buy
+    c.sell_price = sell
+    c.margin = margin
+    c.quantity = quantity
+    c.est_profit = est_profit
+    c.roundtrip_minutes = roundtrip_hours * 60
+    c.gp_per_hour = int(ev / roundtrip_hours)
+    c.stability = stability.assess(buy, sell, series)
 
 
 def stable_flips(conn, **kwargs) -> tuple[list[FlipCandidate], list[FlipCandidate]]:
