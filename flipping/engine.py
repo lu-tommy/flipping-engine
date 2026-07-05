@@ -16,6 +16,7 @@ Guards against the classic data traps:
   - too-good-to-be-true margins (usually a crash in progress or manipulation)
 """
 
+import statistics
 import time
 from dataclasses import dataclass, field
 
@@ -31,6 +32,13 @@ CAPTURE_FRACTION = 0.03
 MIN_ROUNDTRIP_HOURS = 5 / 60
 # Quotes older than this are considered stale and the item is skipped.
 MAX_QUOTE_AGE_S = 30 * 60
+# In quick-flip mode the item must be trading *right now*.
+QUICK_MAX_QUOTE_AGE_S = 10 * 60
+# How many recent 1h buckets volume/price medians are computed over.
+HOURLY_HISTORY_BUCKETS = 6
+# Quick mode: item must have traded both sides in this many of the last 6
+# five-minute buckets.
+QUICK_5M_ACTIVE_REQUIRED = 4
 # Margins above this fraction of the buy price are treated as data artifacts.
 MAX_MARGIN_RATIO = 0.12
 # Never plan to absorb more than this share of one side's hourly volume.
@@ -61,6 +69,60 @@ class FlipCandidate:
     fill_rate: float | None = None
 
 
+def _hourly_history(conn) -> dict[int, dict]:
+    """Per-item medians over the last HOURLY_HISTORY_BUCKETS 1h buckets.
+
+    consistent = the item traded on both sides in every sampled hour.
+    Items missing from some buckets are inconsistent by definition.
+    """
+    ts_rows = conn.execute(
+        "SELECT DISTINCT bucket_ts FROM bucket_1h ORDER BY bucket_ts DESC LIMIT ?",
+        (HOURLY_HISTORY_BUCKETS,)).fetchall()
+    ts_list = [r["bucket_ts"] for r in ts_rows]
+    if not ts_list:
+        return {}
+    qmarks = ",".join("?" * len(ts_list))
+    rows = conn.execute(
+        f"SELECT item_id, avg_high, high_vol, avg_low, low_vol "
+        f"FROM bucket_1h WHERE bucket_ts IN ({qmarks})", ts_list).fetchall()
+
+    grouped: dict[int, list] = {}
+    for r in rows:
+        grouped.setdefault(r["item_id"], []).append(r)
+
+    out = {}
+    n_buckets = len(ts_list)
+    for item_id, bs in grouped.items():
+        active = sum(1 for b in bs if (b["high_vol"] or 0) > 0 and (b["low_vol"] or 0) > 0)
+        highs = [b["avg_high"] for b in bs if b["avg_high"]]
+        lows = [b["avg_low"] for b in bs if b["avg_low"]]
+        out[item_id] = {
+            "consistent": len(bs) == n_buckets and active == n_buckets,
+            "med_high_vol": int(statistics.median([b["high_vol"] or 0 for b in bs])),
+            "med_low_vol": int(statistics.median([b["low_vol"] or 0 for b in bs])),
+            "med_avg_high": int(statistics.median(highs)) if highs else None,
+            "med_avg_low": int(statistics.median(lows)) if lows else None,
+        }
+    return out
+
+
+def _recent_5m_activity(conn) -> tuple[dict[int, int], int]:
+    """(item_id -> two-sided-active count over the last six 5m buckets,
+    required count scaled down if fewer buckets have been collected)."""
+    ts_rows = conn.execute(
+        "SELECT DISTINCT bucket_ts FROM bucket_5m ORDER BY bucket_ts DESC LIMIT 6").fetchall()
+    ts_list = [r["bucket_ts"] for r in ts_rows]
+    if not ts_list:
+        return {}, 0
+    qmarks = ",".join("?" * len(ts_list))
+    rows = conn.execute(
+        f"SELECT item_id, COUNT(*) AS n FROM bucket_5m "
+        f"WHERE bucket_ts IN ({qmarks}) AND high_vol > 0 AND low_vol > 0 "
+        f"GROUP BY item_id", ts_list).fetchall()
+    required = min(QUICK_5M_ACTIVE_REQUIRED, len(ts_list))
+    return {r["item_id"]: r["n"] for r in rows}, required
+
+
 def rank_flips(conn, cash: int, f2p_only: bool = False,
                min_profit: int = 0, max_roundtrip_minutes: float | None = None,
                now: int | None = None) -> list[FlipCandidate]:
@@ -76,6 +138,11 @@ def rank_flips(conn, cash: int, f2p_only: bool = False,
     ).fetchone()
     prior_fill_rate = prior_row["p"] if prior_row["p"] is not None else 1.0
 
+    hourly = _hourly_history(conn)
+    recent_5m_active, active_required = (
+        _recent_5m_activity(conn) if max_roundtrip_minutes is not None else (None, 0))
+    quote_max_age = QUICK_MAX_QUOTE_AGE_S if max_roundtrip_minutes is not None else MAX_QUOTE_AGE_S
+
     rows = conn.execute("""
         WITH latest AS (
             SELECT * FROM latest_snapshots
@@ -87,11 +154,9 @@ def rank_flips(conn, cash: int, f2p_only: bool = False,
         )
         SELECT i.id, i.name, i.members, i.buy_limit,
                l.high, l.high_time, l.low, l.low_time,
-               h.high_vol, h.low_vol,
                f.fill_rate, f.median_roundtrip_min, f.updated_at AS fill_updated_at
         FROM items i
         JOIN latest l ON l.item_id = i.id
-        JOIN hour h   ON h.item_id = i.id
         LEFT JOIN item_fill_stats f ON f.item_id = i.id
         WHERE l.high IS NOT NULL AND l.low IS NOT NULL
           AND i.buy_limit IS NOT NULL
@@ -101,19 +166,36 @@ def rank_flips(conn, cash: int, f2p_only: bool = False,
     for r in rows:
         if f2p_only and r["members"]:
             continue
-        if min(r["high_time"] or 0, r["low_time"] or 0) < now - MAX_QUOTE_AGE_S:
+        if min(r["high_time"] or 0, r["low_time"] or 0) < now - quote_max_age:
             continue
-        sell_side_vol = r["high_vol"] or 0
-        buy_side_vol = r["low_vol"] or 0
+
+        hist = hourly.get(r["id"])
+        if hist is None or not hist["consistent"]:
+            # not two-sided-active in every recent hour: too spotty to trust
+            continue
+        # medians across recent hours, not one (possibly lucky) bucket
+        sell_side_vol = hist["med_high_vol"]
+        buy_side_vol = hist["med_low_vol"]
         if sell_side_vol == 0 or buy_side_vol == 0:
             continue
+
+        if recent_5m_active is not None and recent_5m_active.get(r["id"], 0) < active_required:
+            continue  # quick mode: must be trading both sides right now
 
         buy_price = r["low"] + 1
         sell_price = r["high"] - 1
         if buy_price <= 0 or sell_price <= buy_price or buy_price > cash:
             continue
 
-        margin = flip_margin(buy_price, sell_price, r["name"])
+        # Rank on the conservative margin: the worse of (a) the latest-trade
+        # spread and (b) the median averaged spread over recent hours. A
+        # margin that only exists in one outlier trade dies here.
+        margin_latest = flip_margin(buy_price, sell_price, r["name"])
+        margin = margin_latest
+        if hist["med_avg_low"] and hist["med_avg_high"]:
+            margin_avg = flip_margin(hist["med_avg_low"] + 1,
+                                     hist["med_avg_high"] - 1, r["name"])
+            margin = min(margin_latest, margin_avg)
         if margin < 1:
             continue
         if margin / buy_price > MAX_MARGIN_RATIO:
