@@ -35,7 +35,8 @@ def cmd_top(args) -> None:
     conn = db.connect(args.db)
     flips, rejected = engine.stable_flips(conn, cash=parse_gp(args.cash),
                                           f2p_only=args.f2p,
-                                          min_profit=parse_gp(args.min_profit))
+                                          min_profit=parse_gp(args.min_profit),
+                                          max_roundtrip_minutes=args.max_rt)
     flips = flips[: args.limit]
     if not flips:
         print("No candidates. Run `ingest` first or relax filters.")
@@ -92,6 +93,8 @@ def main() -> None:
     top.add_argument("--min-profit", default="0", help="minimum estimated total profit")
     top.add_argument("--show-rejected", action="store_true",
                      help="also list candidates rejected by the stability check")
+    top.add_argument("--max-rt", type=float, default=None, metavar="MINUTES",
+                     help="quick-flip mode: only items with roundtrip under this")
 
     bt = sub.add_parser("backtest", help="replay flips against recent timeseries history")
     bt.add_argument("--cash", default="10m")

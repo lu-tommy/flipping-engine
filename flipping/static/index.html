@@ -81,8 +81,17 @@
 <div class="controls">
   <label>Cash <input type="text" id="cash" value="10m"></label>
   <label>Min profit <input type="text" id="minProfit" value="0"></label>
+  <label>Turnover
+    <select id="maxRt" style="background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px">
+      <option value="30">Quick (≤30 min)</option>
+      <option value="60" selected>Active (≤1 h)</option>
+      <option value="180">Relaxed (≤3 h)</option>
+      <option value="">Any</option>
+    </select>
+  </label>
   <label><input type="checkbox" id="f2p"> F2P only</label>
   <button onclick="loadFlips()">Refresh</button>
+  <script>document.addEventListener('DOMContentLoaded', () => $('maxRt').addEventListener('change', loadFlips));</script>
   <button class="secondary" onclick="runBacktest()" id="btBtn">Run backtest</button>
   <label style="margin-left:auto"><input type="checkbox" id="auto" checked> auto-refresh 60s</label>
 </div>
@@ -157,6 +166,7 @@ async function loadFlips() {
     cash: $('cash').value, min_profit: $('minProfit').value,
     f2p: $('f2p').checked, limit: 30,
   });
+  if ($('maxRt').value) params.set('max_rt', $('maxRt').value);
   try {
     const r = await fetch('/api/flips?' + params);
     const body = await r.json();

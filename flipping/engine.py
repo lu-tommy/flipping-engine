@@ -62,7 +62,8 @@ class FlipCandidate:
 
 
 def rank_flips(conn, cash: int, f2p_only: bool = False,
-               min_profit: int = 0, now: int | None = None) -> list[FlipCandidate]:
+               min_profit: int = 0, max_roundtrip_minutes: float | None = None,
+               now: int | None = None) -> list[FlipCandidate]:
     now = now or int(time.time())
 
     # Prior fill probability for items the backtest hasn't measured. Without
@@ -123,6 +124,13 @@ def rank_flips(conn, cash: int, f2p_only: bool = False,
             cash // buy_price,
             max(1, int(min(buy_side_vol, sell_side_vol) * MAX_VOLUME_SHARE)),
         )
+        if max_roundtrip_minutes is not None:
+            # quick-flip mode: shrink the order until the round trip fits the
+            # time budget. buy_h + sell_h <= budget solved for quantity:
+            budget_h = max_roundtrip_minutes / 60
+            time_qty = int(budget_h * CAPTURE_FRACTION
+                           * (buy_side_vol * sell_side_vol) / (buy_side_vol + sell_side_vol))
+            quantity = min(quantity, time_qty)
         if quantity < 1:
             continue
 
@@ -138,7 +146,10 @@ def rank_flips(conn, cash: int, f2p_only: bool = False,
                        and r["fill_updated_at"] > now - FILL_STATS_MAX_AGE_S)
         if fresh_stats:
             fill_rate = r["fill_rate"]
-            if r["median_roundtrip_min"]:
+            # observed roundtrips were measured at full backtest quantity;
+            # in quick-flip mode our reduced quantity makes them stale, so
+            # keep the formula estimate there instead
+            if r["median_roundtrip_min"] and max_roundtrip_minutes is None:
                 roundtrip_hours = max(r["median_roundtrip_min"] / 60, MIN_ROUNDTRIP_HOURS)
 
         est_profit = margin * quantity
@@ -146,6 +157,11 @@ def rank_flips(conn, cash: int, f2p_only: bool = False,
             continue
         effective_fill = fill_rate if fill_rate is not None else prior_fill_rate
         expected_profit = est_profit * effective_fill
+
+        # active-flipping mode: skip anything that turns over too slowly,
+        # no matter how good its GP/hr looks on paper
+        if max_roundtrip_minutes is not None and roundtrip_hours * 60 > max_roundtrip_minutes:
+            continue
 
         candidates.append(FlipCandidate(
             item_id=r["id"],

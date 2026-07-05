@@ -34,11 +34,13 @@ def index():
 
 @app.get("/api/flips")
 def api_flips(cash: str = "10m", f2p: bool = False, min_profit: str = "0",
+              max_rt: float | None = Query(None, description="max roundtrip minutes"),
               limit: int = Query(20, le=100)):
     conn = _conn()
     try:
         passing, rejected = engine.stable_flips(
-            conn, cash=parse_gp(cash), f2p_only=f2p, min_profit=parse_gp(min_profit))
+            conn, cash=parse_gp(cash), f2p_only=f2p, min_profit=parse_gp(min_profit),
+            max_roundtrip_minutes=max_rt)
     finally:
         conn.close()
     freshness = None
@@ -86,6 +88,7 @@ class SuggestionRequest(BaseModel):
     f2p_only: bool = False
     min_profit: int = 0
     total_slots: int = 8
+    max_roundtrip_minutes: float | None = None
 
 
 @app.post("/api/suggestion")
@@ -98,6 +101,7 @@ def api_suggestion(req: SuggestionRequest):
         f2p_only=req.f2p_only,
         min_profit=req.min_profit,
         total_slots=req.total_slots,
+        max_roundtrip_minutes=req.max_roundtrip_minutes,
     )
     conn = _conn()
     try:

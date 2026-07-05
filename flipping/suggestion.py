@@ -39,6 +39,7 @@ class AccountState:
     f2p_only: bool = False
     min_profit: int = 0
     total_slots: int = 8   # 3 for F2P
+    max_roundtrip_minutes: float | None = None  # quick-flip mode
 
 
 def _latest_prices(conn, item_ids):
@@ -102,7 +103,8 @@ def suggest(conn, state: AccountState) -> dict:
     if len(state.offers) < state.total_slots and state.cash > 0:
         skip = {o.item_id for o in state.offers} | {h.item_id for h in state.inventory}
         passing, _ = stable_flips(conn, cash=state.cash, f2p_only=state.f2p_only,
-                                  min_profit=state.min_profit)
+                                  min_profit=state.min_profit,
+                                  max_roundtrip_minutes=state.max_roundtrip_minutes)
         for c in passing:
             if c.item_id in skip:
                 continue
