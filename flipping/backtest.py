@@ -159,6 +159,17 @@ def run(conn, cash: int, top: int = 20, capture: float = CAPTURE_FRACTION) -> di
     ratios = [i.median_roundtrip_min / i.predicted_roundtrip_min
               for i in items
               if i.median_roundtrip_min and i.predicted_roundtrip_min]
+    now = int(time.time())
+    conn.executemany(
+        "INSERT INTO item_fill_stats VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(item_id) DO UPDATE SET updated_at=excluded.updated_at, "
+        "capture=excluded.capture, simulations=excluded.simulations, "
+        "fill_rate=excluded.fill_rate, median_roundtrip_min=excluded.median_roundtrip_min",
+        [(i.item_id, now, capture, i.simulations, i.fill_rate, i.median_roundtrip_min)
+         for i in items],
+    )
+    conn.commit()
+
     summary = {
         "ran_at": int(time.time()),
         "capture": capture,

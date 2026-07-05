@@ -49,6 +49,15 @@ CREATE TABLE IF NOT EXISTS bucket_1h (
     PRIMARY KEY (bucket_ts, item_id)
 );
 
+CREATE TABLE IF NOT EXISTS item_fill_stats (
+    item_id INTEGER PRIMARY KEY,
+    updated_at INTEGER NOT NULL,
+    capture REAL NOT NULL,          -- capture assumption the stats were measured at
+    simulations INTEGER NOT NULL,
+    fill_rate REAL NOT NULL,        -- fraction of simulated flips that round-tripped
+    median_roundtrip_min REAL       -- of completed flips; NULL if none completed
+);
+
 CREATE INDEX IF NOT EXISTS idx_latest_item ON latest_snapshots (item_id, fetched_at);
 CREATE INDEX IF NOT EXISTS idx_5m_item ON bucket_5m (item_id, bucket_ts);
 CREATE INDEX IF NOT EXISTS idx_1h_item ON bucket_1h (item_id, bucket_ts);

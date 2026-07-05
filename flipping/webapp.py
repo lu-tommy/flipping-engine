@@ -11,9 +11,11 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 
 from . import backtest, db, engine
 from .cli import parse_gp
+from .suggestion import AccountOffer, AccountState, HeldItem, suggest
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -59,6 +61,47 @@ def api_backtest_run(cash: str = "10m", top: int = Query(15, le=40),
     conn = _conn()
     try:
         return backtest.run(conn, cash=parse_gp(cash), top=top, capture=capture)
+    finally:
+        conn.close()
+
+
+class OfferIn(BaseModel):
+    slot: int
+    type: str            # "buy" | "sell"
+    item_id: int
+    price: int
+    quantity: int
+    filled: int = 0
+
+
+class HeldIn(BaseModel):
+    item_id: int
+    quantity: int
+
+
+class SuggestionRequest(BaseModel):
+    cash: int
+    offers: list[OfferIn] = []
+    inventory: list[HeldIn] = []
+    f2p_only: bool = False
+    min_profit: int = 0
+    total_slots: int = 8
+
+
+@app.post("/api/suggestion")
+def api_suggestion(req: SuggestionRequest):
+    """The milestone-3 endpoint: full account state in, single action out."""
+    state = AccountState(
+        cash=req.cash,
+        offers=[AccountOffer(**o.model_dump()) for o in req.offers],
+        inventory=[HeldItem(**h.model_dump()) for h in req.inventory],
+        f2p_only=req.f2p_only,
+        min_profit=req.min_profit,
+        total_slots=req.total_slots,
+    )
+    conn = _conn()
+    try:
+        return suggest(conn, state)
     finally:
         conn.close()
 

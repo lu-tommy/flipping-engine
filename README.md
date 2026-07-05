@@ -42,10 +42,13 @@ Ingestion runs every 5 minutes via launchd
 2. ~~Timeseries stability scoring + backtest harness~~ (done) —
    `CAPTURE_FRACTION` calibrated to 0.03 from first backtest (was 0.10;
    real roundtrips ran 3.6x slower). Re-calibrate as snapshot history grows.
-3. Suggestion API service: full account state in → single BUY/SELL/ABORT/WAIT
-   action out (protocol modeled on the Flipping Copilot client's protobuf).
-   `webapp.py` is the seed of this service.
-4. RuneLite plugin integration
+3. ~~Suggestion API service~~ (done) — `POST /api/suggestion`: full account
+   state (cash, open offers, held inventory) in → single
+   abort/sell/buy/wait action out. Ranker uses backtest-measured per-item
+   fill rates, with the overall backtest fill rate as prior for unmeasured
+   items (prevents adverse selection toward untested items).
+4. RuneLite plugin integration (talk to /api/suggestion; use the original
+   flipping-copilot plugin source as reference for widget IDs / GE events)
 
 ## Web dashboard
 

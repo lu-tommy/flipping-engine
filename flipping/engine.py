@@ -37,6 +37,8 @@ MAX_MARGIN_RATIO = 0.12
 MAX_VOLUME_SHARE = 0.25
 # How many top candidates get the (per-item, cached) timeseries stability check.
 STABILITY_CHECK_TOP = 40
+# Backtest-measured fill stats older than this are ignored.
+FILL_STATS_MAX_AGE_S = 7 * 24 * 3600
 
 
 @dataclass
@@ -55,11 +57,23 @@ class FlipCandidate:
     hourly_sell_side_vol: int  # highPriceVolume: how fast our sell fills
     stability: stability.StabilityResult = field(
         default_factory=lambda: stability.StabilityResult(True, "unchecked: below check depth"))
+    # backtest-measured; None until this item has been backtested
+    fill_rate: float | None = None
 
 
 def rank_flips(conn, cash: int, f2p_only: bool = False,
                min_profit: int = 0, now: int | None = None) -> list[FlipCandidate]:
     now = now or int(time.time())
+
+    # Prior fill probability for items the backtest hasn't measured. Without
+    # this, measured items are penalized by their real fill rate while
+    # unmeasured ones keep optimistic formula numbers and unfairly win the
+    # ranking (adverse selection toward untested items).
+    prior_row = conn.execute(
+        "SELECT AVG(fill_rate) AS p FROM item_fill_stats WHERE updated_at > ?",
+        (now - FILL_STATS_MAX_AGE_S,),
+    ).fetchone()
+    prior_fill_rate = prior_row["p"] if prior_row["p"] is not None else 1.0
 
     rows = conn.execute("""
         WITH latest AS (
@@ -72,10 +86,12 @@ def rank_flips(conn, cash: int, f2p_only: bool = False,
         )
         SELECT i.id, i.name, i.members, i.buy_limit,
                l.high, l.high_time, l.low, l.low_time,
-               h.high_vol, h.low_vol
+               h.high_vol, h.low_vol,
+               f.fill_rate, f.median_roundtrip_min, f.updated_at AS fill_updated_at
         FROM items i
         JOIN latest l ON l.item_id = i.id
         JOIN hour h   ON h.item_id = i.id
+        LEFT JOIN item_fill_stats f ON f.item_id = i.id
         WHERE l.high IS NOT NULL AND l.low IS NOT NULL
           AND i.buy_limit IS NOT NULL
     """).fetchall()
@@ -114,9 +130,22 @@ def rank_flips(conn, cash: int, f2p_only: bool = False,
         sell_hours = quantity / (CAPTURE_FRACTION * sell_side_vol)
         roundtrip_hours = max(buy_hours + sell_hours, MIN_ROUNDTRIP_HOURS)
 
+        # Prefer measured behavior over the formula when the backtest has
+        # covered this item recently: use the observed roundtrip time and
+        # weight profit by the observed probability of completing at all.
+        fill_rate = None
+        fresh_stats = (r["fill_rate"] is not None
+                       and r["fill_updated_at"] > now - FILL_STATS_MAX_AGE_S)
+        if fresh_stats:
+            fill_rate = r["fill_rate"]
+            if r["median_roundtrip_min"]:
+                roundtrip_hours = max(r["median_roundtrip_min"] / 60, MIN_ROUNDTRIP_HOURS)
+
         est_profit = margin * quantity
         if est_profit < min_profit:
             continue
+        effective_fill = fill_rate if fill_rate is not None else prior_fill_rate
+        expected_profit = est_profit * effective_fill
 
         candidates.append(FlipCandidate(
             item_id=r["id"],
@@ -128,9 +157,10 @@ def rank_flips(conn, cash: int, f2p_only: bool = False,
             quantity=quantity,
             est_profit=est_profit,
             roundtrip_minutes=roundtrip_hours * 60,
-            gp_per_hour=int(est_profit / roundtrip_hours),
+            gp_per_hour=int(expected_profit / roundtrip_hours),
             hourly_buy_side_vol=buy_side_vol,
             hourly_sell_side_vol=sell_side_vol,
+            fill_rate=fill_rate,
         ))
 
     candidates.sort(key=lambda c: c.gp_per_hour, reverse=True)

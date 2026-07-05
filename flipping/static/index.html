@@ -96,7 +96,7 @@ function renderFlips(rows) {
   const cols = [
     ['name','Item'], ['buy_price','Buy'], ['sell_price','Sell'], ['margin','Margin'],
     ['quantity','Qty'], ['est_profit','Profit'], ['roundtrip_minutes','RT (min)'],
-    ['gp_per_hour','GP/hr'],
+    ['fill_rate','Fill %'], ['gp_per_hour','GP/hr'],
   ];
   let h = '<table><thead><tr>' + cols.map(([k,label]) =>
     `<th onclick="setSort('${k}')">${label}${k===sortKey ? (sortDesc?' ▾':' ▴') : ''}</th>`
@@ -108,6 +108,7 @@ function renderFlips(rows) {
       <td>${fmtGp(c.margin)}</td><td>${c.quantity.toLocaleString()}</td>
       <td class="gp">${fmtGp(c.est_profit)}</td>
       <td>${c.roundtrip_minutes.toFixed(0)}</td>
+      <td>${c.fill_rate != null ? (c.fill_rate*100).toFixed(0)+'%' : '—'}</td>
       <td class="gp">${fmtGp(c.gp_per_hour)}</td></tr>`;
   }
   $('flips').innerHTML = h + '</tbody></table>';

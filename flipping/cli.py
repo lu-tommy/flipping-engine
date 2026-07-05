@@ -42,13 +42,14 @@ def cmd_top(args) -> None:
         return
 
     header = (f"{'ITEM':<32} {'BUY':>10} {'SELL':>10} {'MARGIN':>8} "
-              f"{'QTY':>7} {'PROFIT':>9} {'RT(min)':>8} {'GP/HR':>9} {'VOL(b/s)':>13}")
+              f"{'QTY':>7} {'PROFIT':>9} {'RT(min)':>8} {'FILL%':>6} {'GP/HR':>9} {'VOL(b/s)':>13}")
     print(header)
     print("-" * len(header))
     for c in flips:
+        fill = f"{c.fill_rate:.0%}" if c.fill_rate is not None else "-"
         print(f"{c.name[:31]:<32} {fmt_gp(c.buy_price):>10} {fmt_gp(c.sell_price):>10} "
               f"{fmt_gp(c.margin):>8} {c.quantity:>7} {fmt_gp(c.est_profit):>9} "
-              f"{c.roundtrip_minutes:>8.1f} {fmt_gp(c.gp_per_hour):>9} "
+              f"{c.roundtrip_minutes:>8.1f} {fill:>6} {fmt_gp(c.gp_per_hour):>9} "
               f"{c.hourly_buy_side_vol:>6}/{c.hourly_sell_side_vol:<6}")
 
     if args.show_rejected and rejected:
