@@ -23,8 +23,10 @@ from . import stability
 from .ge_tax import flip_margin
 
 # Fraction of one side's hourly flow we assume our offer captures.
-# Conservative: we are one of many offers at the best price.
-CAPTURE_FRACTION = 0.10
+# Calibrated 2026-07-05: at 0.10 the backtest showed real roundtrips running
+# ~3.6x slower than predicted (43% fill rate within 8h). 0.10/3.6 ~= 0.03.
+# Re-run `cli backtest` after data accumulates and adjust.
+CAPTURE_FRACTION = 0.03
 # Floor on estimated round-trip so thin items don't show absurd GP/hr.
 MIN_ROUNDTRIP_HOURS = 5 / 60
 # Quotes older than this are considered stale and the item is skipped.

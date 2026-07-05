@@ -2,7 +2,7 @@
 
 import argparse
 
-from . import db, engine, ingest
+from . import backtest, db, engine, ingest
 
 
 def parse_gp(s: str) -> int:
@@ -57,6 +57,26 @@ def cmd_top(args) -> None:
             print(f"  {c.name:<32} {fmt_gp(c.gp_per_hour):>9} gp/hr  -- {c.stability.reason}")
 
 
+def cmd_backtest(args) -> None:
+    conn = db.connect(args.db)
+    s = backtest.run(conn, cash=parse_gp(args.cash), top=args.top, capture=args.capture)
+    print(f"Backtested {s['items_tested']} items ({s['items_skipped']} skipped), "
+          f"{s['total_simulations']} simulated flips, capture={s['capture']}")
+    if s["overall_fill_rate"] is not None:
+        print(f"Overall fill rate: {s['overall_fill_rate']:.0%}")
+    ratio = s["median_actual_vs_predicted_roundtrip"]
+    if ratio is not None:
+        print(f"Actual vs predicted roundtrip: {ratio:.2f}x "
+              f"({'fills slower than predicted' if ratio > 1 else 'fills faster than predicted'})")
+    print(f"\n{'ITEM':<32} {'SIMS':>5} {'FILL%':>6} {'RT med':>8} {'RT pred':>8} {'PROFIT':>10}")
+    for i in s["items"]:
+        rt = f"{i['median_roundtrip_min']:.0f}m" if i["median_roundtrip_min"] else "-"
+        pred = f"{i['predicted_roundtrip_min']:.0f}m" if i["predicted_roundtrip_min"] else "-"
+        print(f"{i['name'][:31]:<32} {i['simulations']:>5} {i['fill_rate']:>6.0%} "
+              f"{rt:>8} {pred:>8} {fmt_gp(i['total_profit']):>10}")
+    print(f"\nreport written to {backtest.REPORT_PATH}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="flipping", description="OSRS flip suggestion engine")
     p.add_argument("--db", default=str(db.DEFAULT_DB_PATH), help="SQLite db path")
@@ -72,8 +92,14 @@ def main() -> None:
     top.add_argument("--show-rejected", action="store_true",
                      help="also list candidates rejected by the stability check")
 
+    bt = sub.add_parser("backtest", help="replay flips against recent timeseries history")
+    bt.add_argument("--cash", default="10m")
+    bt.add_argument("--top", type=int, default=20, help="how many top-ranked items to test")
+    bt.add_argument("--capture", type=float, default=engine.CAPTURE_FRACTION,
+                    help="assumed fraction of bucket volume our offer captures")
+
     args = p.parse_args()
-    {"ingest": cmd_ingest, "top": cmd_top}[args.command](args)
+    {"ingest": cmd_ingest, "top": cmd_top, "backtest": cmd_backtest}[args.command](args)
 
 
 if __name__ == "__main__":

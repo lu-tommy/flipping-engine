@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>flipping-engine</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #16181d; --panel: #1e2127; --border: #2c313a;
+    --text: #d7dae0; --dim: #8b919c; --accent: #e8b64c;
+    --green: #7bc96f; --red: #e06c75;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: baseline; gap: 14px; padding: 14px 20px;
+           border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 17px; margin: 0; color: var(--accent); }
+  header .fresh { color: var(--dim); font-size: 12px; margin-left: auto; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 20px;
+              align-items: center; }
+  .controls label { color: var(--dim); font-size: 12px; }
+  .controls input[type=text] { width: 90px; background: var(--panel); color: var(--text);
+              border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+  .controls button { background: var(--accent); color: #1a1a1a; border: 0;
+              border-radius: 6px; padding: 7px 14px; font-weight: 600; cursor: pointer; }
+  .controls button.secondary { background: var(--panel); color: var(--text);
+              border: 1px solid var(--border); }
+  main { padding: 0 20px 40px; max-width: 1180px; margin: 0 auto; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+  th, td { padding: 7px 10px; text-align: right; white-space: nowrap; }
+  th { color: var(--dim); font-size: 11px; text-transform: uppercase;
+       letter-spacing: .05em; border-bottom: 1px solid var(--border);
+       cursor: pointer; user-select: none; }
+  td:first-child, th:first-child { text-align: left; }
+  tbody tr { border-bottom: 1px solid #23262d; }
+  tbody tr:hover { background: var(--panel); }
+  td.item a { color: var(--text); text-decoration: none; font-weight: 600; }
+  td.item a:hover { color: var(--accent); }
+  .gp { color: var(--green); font-weight: 600; }
+  .members-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+                 background: var(--accent); margin-left: 6px; vertical-align: middle; }
+  h2 { font-size: 13px; color: var(--dim); text-transform: uppercase;
+       letter-spacing: .06em; margin: 26px 0 4px; }
+  .rejected td { color: var(--dim); }
+  .reason { color: var(--red); font-size: 12px; text-align: left !important; }
+  #backtest-summary { background: var(--panel); border: 1px solid var(--border);
+       border-radius: 8px; padding: 12px 16px; margin-top: 10px; font-size: 13px;
+       color: var(--dim); display: none; }
+  #backtest-summary b { color: var(--text); }
+  .spin { color: var(--dim); padding: 30px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>flipping-engine</h1>
+  <span style="color:var(--dim);font-size:12px">OSRS GE flip suggestions</span>
+  <span class="fresh" id="freshness"></span>
+</header>
+
+<div class="controls">
+  <label>Cash <input type="text" id="cash" value="10m"></label>
+  <label>Min profit <input type="text" id="minProfit" value="0"></label>
+  <label><input type="checkbox" id="f2p"> F2P only</label>
+  <button onclick="loadFlips()">Refresh</button>
+  <button class="secondary" onclick="runBacktest()" id="btBtn">Run backtest</button>
+  <label style="margin-left:auto"><input type="checkbox" id="auto" checked> auto-refresh 60s</label>
+</div>
+
+<main>
+  <div id="flips" class="spin">Loading…</div>
+
+  <h2>Rejected by stability check</h2>
+  <div id="rejected" style="color:var(--dim)">—</div>
+
+  <h2>Backtest</h2>
+  <div id="backtest-summary"></div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmtGp = n => {
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n/1e9).toFixed(2) + 'b';
+  if (a >= 1e6) return (n/1e6).toFixed(2) + 'm';
+  if (a >= 1e4) return (n/1e3).toFixed(1) + 'k';
+  return String(Math.round(n));
+};
+const wikiLink = id => `https://prices.runescape.wiki/osrs/item/${id}`;
+
+let sortKey = 'gp_per_hour', sortDesc = true, lastRows = [];
+
+function renderFlips(rows) {
+  lastRows = rows;
+  rows = [...rows].sort((a,b) => (sortDesc ? -1 : 1) * ((a[sortKey] ?? 0) - (b[sortKey] ?? 0)));
+  const cols = [
+    ['name','Item'], ['buy_price','Buy'], ['sell_price','Sell'], ['margin','Margin'],
+    ['quantity','Qty'], ['est_profit','Profit'], ['roundtrip_minutes','RT (min)'],
+    ['gp_per_hour','GP/hr'],
+  ];
+  let h = '<table><thead><tr>' + cols.map(([k,label]) =>
+    `<th onclick="setSort('${k}')">${label}${k===sortKey ? (sortDesc?' ▾':' ▴') : ''}</th>`
+  ).join('') + '</tr></thead><tbody>';
+  for (const c of rows) {
+    h += `<tr>
+      <td class="item"><a href="${wikiLink(c.item_id)}" target="_blank">${c.name}</a>${c.members ? '<span class="members-dot" title="members"></span>' : ''}</td>
+      <td>${fmtGp(c.buy_price)}</td><td>${fmtGp(c.sell_price)}</td>
+      <td>${fmtGp(c.margin)}</td><td>${c.quantity.toLocaleString()}</td>
+      <td class="gp">${fmtGp(c.est_profit)}</td>
+      <td>${c.roundtrip_minutes.toFixed(0)}</td>
+      <td class="gp">${fmtGp(c.gp_per_hour)}</td></tr>`;
+  }
+  $('flips').innerHTML = h + '</tbody></table>';
+}
+
+function setSort(k) {
+  sortDesc = (sortKey === k) ? !sortDesc : true;
+  sortKey = k;
+  renderFlips(lastRows);
+}
+
+async function loadFlips() {
+  const params = new URLSearchParams({
+    cash: $('cash').value, min_profit: $('minProfit').value,
+    f2p: $('f2p').checked, limit: 30,
+  });
+  try {
+    const r = await fetch('/api/flips?' + params);
+    const body = await r.json();
+    renderFlips(body.passing);
+    const rej = body.rejected;
+    $('rejected').innerHTML = rej.length
+      ? '<table><tbody>' + rej.map(c =>
+          `<tr class="rejected"><td class="item" style="text-align:left">${c.name}</td>
+           <td>${fmtGp(c.gp_per_hour)} gp/hr</td>
+           <td class="reason">${c.stability.reason}</td></tr>`).join('') + '</tbody></table>'
+      : '—';
+    if (body.data_fetched_at) {
+      const age = Math.round((Date.now()/1000 - body.data_fetched_at) / 60);
+      $('freshness').textContent = `data ${age} min old`;
+    }
+  } catch (e) {
+    $('flips').innerHTML = `<div class="spin">Failed to load: ${e}</div>`;
+  }
+}
+
+async function runBacktest() {
+  $('btBtn').disabled = true; $('btBtn').textContent = 'Running…';
+  try {
+    const r = await fetch('/api/backtest/run?cash=' + encodeURIComponent($('cash').value), {method:'POST'});
+    showBacktest(await r.json());
+  } finally {
+    $('btBtn').disabled = false; $('btBtn').textContent = 'Run backtest';
+  }
+}
+
+function showBacktest(s) {
+  if (!s || s.error) return;
+  const el = $('backtest-summary');
+  el.style.display = 'block';
+  const ratio = s.median_actual_vs_predicted_roundtrip;
+  el.innerHTML =
+    `<b>${s.total_simulations}</b> simulated flips across <b>${s.items_tested}</b> items ` +
+    `(capture ${s.capture}) — fill rate <b>${(s.overall_fill_rate*100).toFixed(0)}%</b>` +
+    (ratio ? `, actual roundtrips <b>${ratio.toFixed(1)}×</b> the engine's prediction` : '') +
+    `<br>Top by simulated profit: ` +
+    [...s.items].sort((a,b)=>b.total_profit-a.total_profit).slice(0,5)
+      .map(i => `${i.name} (${fmtGp(i.total_profit)}, ${(i.fill_rate*100).toFixed(0)}% fill)`).join(' · ');
+}
+
+loadFlips();
+fetch('/api/backtest/latest').then(r => r.ok ? r.json() : null).then(showBacktest);
+setInterval(() => { if ($('auto').checked) loadFlips(); }, 60_000);
+</script>
+</body>
+</html>

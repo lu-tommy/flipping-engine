@@ -10,6 +10,8 @@ architectural study of the original.
 .venv/bin/python -m flipping.cli ingest              # fetch current wiki prices
 .venv/bin/python -m flipping.cli top --cash 10m      # ranked flip candidates
 .venv/bin/python -m flipping.cli top --f2p --cash 2m --min-profit 50k
+.venv/bin/python -m flipping.cli backtest --cash 10m # replay flips vs history
+.venv/bin/python -m flipping.webapp                  # dashboard on :8787
 ```
 
 Run `ingest` on a cron (every 1–5 min) to accumulate history; `top` only reads
@@ -37,11 +39,20 @@ Ingestion runs every 5 minutes via launchd
 ## Roadmap
 
 1. ~~Ingestion + heuristic ranker v1~~ (done)
-2. ~~Timeseries stability scoring~~ (done) — remaining: backtest harness over
-   accumulated snapshots; tune `CAPTURE_FRACTION` against observed fills
+2. ~~Timeseries stability scoring + backtest harness~~ (done) —
+   `CAPTURE_FRACTION` calibrated to 0.03 from first backtest (was 0.10;
+   real roundtrips ran 3.6x slower). Re-calibrate as snapshot history grows.
 3. Suggestion API service: full account state in → single BUY/SELL/ABORT/WAIT
-   action out (protocol modeled on the Flipping Copilot client's protobuf)
+   action out (protocol modeled on the Flipping Copilot client's protobuf).
+   `webapp.py` is the seed of this service.
 4. RuneLite plugin integration
+
+## Web dashboard
+
+`flipping/webapp.py` (FastAPI) + `flipping/static/index.html`: sortable
+candidate table with cash/F2P/min-profit filters, stability rejections with
+reasons, one-click backtest, 60s auto-refresh. Item names link to the wiki
+price page.
 
 ## Tests
 
