@@ -71,6 +71,22 @@ CREATE TABLE IF NOT EXISTS observed_fills (
 
 CREATE INDEX IF NOT EXISTS idx_fills_item ON observed_fills (item_id, ts);
 
+CREATE TABLE IF NOT EXISTS active_flips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL,
+    quantity INTEGER NOT NULL,
+    buy_price INTEGER NOT NULL,     -- target while buying; actual once bought
+    sell_price INTEGER,             -- target/actual sell price
+    status TEXT NOT NULL DEFAULT 'buying',  -- buying | selling | done
+    created_ts INTEGER NOT NULL,
+    bought_ts INTEGER,
+    sold_ts INTEGER,
+    tax INTEGER,                    -- per completed flip, total gp
+    profit INTEGER                  -- post-tax, total gp
+);
+
+CREATE INDEX IF NOT EXISTS idx_active_flips_status ON active_flips (status, created_ts);
+
 CREATE INDEX IF NOT EXISTS idx_latest_item ON latest_snapshots (item_id, fetched_at);
 CREATE INDEX IF NOT EXISTS idx_5m_item ON bucket_5m (item_id, bucket_ts);
 CREATE INDEX IF NOT EXISTS idx_1h_item ON bucket_1h (item_id, bucket_ts);

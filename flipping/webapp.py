@@ -13,7 +13,7 @@ from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import backtest, db, engine
+from . import backtest, db, engine, tracker
 from .cli import parse_gp
 from .suggestion import AccountOffer, AccountState, HeldItem, suggest
 
@@ -139,6 +139,89 @@ def api_fills(req: FillsRequest):
         return {"acked": len(req.fills)}
     finally:
         conn.close()
+
+
+class NewFlip(BaseModel):
+    item_id: int
+    quantity: int
+    buy_price: int
+    sell_price: int | None = None
+
+
+class FlipUpdate(BaseModel):
+    buy_price: int | None = None
+    sell_price: int | None = None
+    quantity: int | None = None
+
+
+class MarkBought(BaseModel):
+    actual_price: int | None = None
+    actual_quantity: int | None = None
+
+
+class MarkSold(BaseModel):
+    actual_price: int | None = None
+
+
+def _with_conn(fn):
+    conn = _conn()
+    try:
+        return fn(conn)
+    finally:
+        conn.close()
+
+
+@app.get("/api/active-flips")
+def api_active_flips():
+    return _with_conn(tracker.list_flips)
+
+
+@app.post("/api/active-flips")
+def api_add_flip(req: NewFlip):
+    flip_id = _with_conn(lambda c: tracker.add_flip(
+        c, req.item_id, req.quantity, req.buy_price, req.sell_price))
+    return {"id": flip_id}
+
+
+@app.patch("/api/active-flips/{flip_id}")
+def api_update_flip(flip_id: int, req: FlipUpdate):
+    ok = _with_conn(lambda c: tracker.update_prices(
+        c, flip_id, req.buy_price, req.sell_price, req.quantity))
+    if not ok:
+        return JSONResponse({"error": "flip not found or already done"}, status_code=404)
+    return {"ok": True}
+
+
+@app.post("/api/active-flips/{flip_id}/bought")
+def api_mark_bought(flip_id: int, req: MarkBought):
+    ok = _with_conn(lambda c: tracker.mark_bought(
+        c, flip_id, req.actual_price, req.actual_quantity))
+    if not ok:
+        return JSONResponse({"error": "flip not found or not in buying state"}, status_code=404)
+    return {"ok": True}
+
+
+@app.post("/api/active-flips/{flip_id}/sold")
+def api_mark_sold(flip_id: int, req: MarkSold):
+    result = _with_conn(lambda c: tracker.mark_sold(c, flip_id, req.actual_price))
+    if result is None:
+        return JSONResponse(
+            {"error": "flip not found, not in selling state, or no sell price given"},
+            status_code=404)
+    return result
+
+
+@app.delete("/api/active-flips/{flip_id}")
+def api_delete_flip(flip_id: int):
+    ok = _with_conn(lambda c: tracker.delete_flip(c, flip_id))
+    return {"ok": ok}
+
+
+@app.get("/api/items/search")
+def api_item_search(q: str, limit: int = Query(10, le=25)):
+    if len(q) < 2:
+        return []
+    return _with_conn(lambda c: tracker.search_items(c, q, limit))
 
 
 @app.get("/api/backtest/latest")
