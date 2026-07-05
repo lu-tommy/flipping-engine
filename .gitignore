@@ -2,3 +2,8 @@
 prices.db
 __pycache__/
 *.pyc
+
+# gradle
+runelite-plugin/build/
+runelite-plugin/.gradle/
+logs/

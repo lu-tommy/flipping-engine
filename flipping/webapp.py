@@ -106,6 +106,41 @@ def api_suggestion(req: SuggestionRequest):
         conn.close()
 
 
+class FillIn(BaseModel):
+    ts: int
+    item_id: int
+    type: str
+    offer_price: int
+    quantity: int
+    spent: int
+    display_name: str = ""
+
+
+class FillsRequest(BaseModel):
+    fills: list[FillIn]
+
+
+@app.post("/api/fills")
+def api_fills(req: FillsRequest):
+    """Ground-truth fills observed in-game by the RuneLite plugin.
+
+    These are what eventually replace the backtest's capture-fraction
+    assumption with measured per-item fill behavior.
+    """
+    conn = _conn()
+    try:
+        conn.executemany(
+            "INSERT INTO observed_fills (ts, item_id, type, offer_price, quantity, spent, display_name) "
+            "VALUES (?,?,?,?,?,?,?)",
+            [(f.ts, f.item_id, f.type, f.offer_price, f.quantity, f.spent, f.display_name)
+             for f in req.fills],
+        )
+        conn.commit()
+        return {"acked": len(req.fills)}
+    finally:
+        conn.close()
+
+
 @app.get("/api/backtest/latest")
 def api_backtest_latest():
     if not backtest.REPORT_PATH.exists():

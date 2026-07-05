@@ -58,6 +58,19 @@ CREATE TABLE IF NOT EXISTS item_fill_stats (
     median_roundtrip_min REAL       -- of completed flips; NULL if none completed
 );
 
+CREATE TABLE IF NOT EXISTS observed_fills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,            -- when the fill was observed in-game
+    item_id INTEGER NOT NULL,
+    type TEXT NOT NULL,             -- buy | sell
+    offer_price INTEGER NOT NULL,   -- price the offer was placed at
+    quantity INTEGER NOT NULL,      -- items filled in this delta
+    spent INTEGER NOT NULL,         -- gp actually moved (GE can improve price)
+    display_name TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_fills_item ON observed_fills (item_id, ts);
+
 CREATE INDEX IF NOT EXISTS idx_latest_item ON latest_snapshots (item_id, fetched_at);
 CREATE INDEX IF NOT EXISTS idx_5m_item ON bucket_5m (item_id, bucket_ts);
 CREATE INDEX IF NOT EXISTS idx_1h_item ON bucket_1h (item_id, bucket_ts);
