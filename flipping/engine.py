@@ -40,6 +40,9 @@ QUICK_BUY_PERCENTILE = 0.35
 QUICK_SELL_PERCENTILE = 0.65
 # How many coarse-ranked candidates get timeseries-based deep pricing.
 DEEP_PRICE_TOP = 60
+# Reject buys when the recent mid-price sits this far below the earlier mid:
+# buying into a falling market means the exit price keeps moving away.
+DOWNTREND_LIMIT = 0.02
 # Floor on estimated round-trip so thin items don't show absurd GP/hr.
 MIN_ROUNDTRIP_HOURS = 5 / 60
 # Quotes older than this are considered stale and the item is skipped.
@@ -328,6 +331,18 @@ def _deep_reprice(conn, c: "FlipCandidate", cash: int,
     if last_highs and max(last_highs) < sell:
         c.stability = stability.StabilityResult(False, "market trading below target sell")
         return
+
+    # downtrend guard: recent ~2h mid-price vs the earlier window
+    mids = [(b["avgHighPrice"] + b["avgLowPrice"]) / 2
+            for b in recent if b.get("avgHighPrice") and b.get("avgLowPrice")]
+    if len(mids) >= 36:
+        recent_mid = statistics.median(mids[-24:])
+        older_mid = statistics.median(mids[:-24])
+        drop = (recent_mid - older_mid) / older_mid
+        if drop < -DOWNTREND_LIMIT:
+            c.stability = stability.StabilityResult(
+                False, f"downtrend: mid price {abs(drop):.1%} below earlier level")
+            return
 
     touch_buy = sum(1 for v in lows if v <= buy) / len(lows)
     touch_sell = sum(1 for v in highs if v >= sell) / len(highs)

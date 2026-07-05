@@ -83,5 +83,45 @@ class TestConsistency(unittest.TestCase):
         self.assertEqual(rank_flips(conn, cash=CASH, max_roundtrip_minutes=60), [])
 
 
+def make_series(n, low, high):
+    return [{"timestamp": i * 300, "avgLowPrice": low, "avgHighPrice": high,
+             "lowPriceVolume": 500, "highPriceVolume": 500} for i in range(n)]
+
+
+class TestDeepRepricing(unittest.TestCase):
+    def setUp(self):
+        buckets = [(NOW - h * 3600, 1, 1100, 1000, 1000, 1000) for h in range(3)]
+        self.conn = conn_with(buckets, items=[(1, "Steady item", 0, 10000)],
+                              latest=[(NOW, 1, 1100, NOW - 30, 1000, NOW - 30)])
+
+    def test_stable_series_priced_at_edges(self):
+        series = make_series(124, 1000, 1100)
+        with patch("flipping.stability.get_timeseries_cached", lambda *a, **k: series):
+            flips = rank_flips(self.conn, cash=CASH)
+        self.assertEqual(len(flips), 1)
+        c = flips[0]
+        self.assertTrue(c.stability.ok)
+        self.assertEqual(c.buy_price, 1000)   # p25 of lows
+        self.assertEqual(c.sell_price, 1100)  # p75 of highs
+        self.assertEqual(c.margin, 78)        # 1100 - 22 tax - 1000
+
+    def test_downtrend_rejected(self):
+        # sell side holds but the bid side collapsed recently: mid down ~5%
+        series = make_series(100, 1000, 1100) + make_series(24, 900, 1100)
+        with patch("flipping.stability.get_timeseries_cached", lambda *a, **k: series):
+            flips = rank_flips(self.conn, cash=CASH)
+        self.assertEqual(len(flips), 1)
+        self.assertFalse(flips[0].stability.ok)
+        self.assertIn("downtrend", flips[0].stability.reason)
+
+    def test_crash_below_sell_rejected(self):
+        # recent highs fell below the p75 target sell
+        series = make_series(120, 1000, 1100) + make_series(4, 950, 1020)
+        with patch("flipping.stability.get_timeseries_cached", lambda *a, **k: series):
+            flips = rank_flips(self.conn, cash=CASH)
+        self.assertFalse(flips[0].stability.ok)
+        self.assertIn("below target sell", flips[0].stability.reason)
+
+
 if __name__ == "__main__":
     unittest.main()

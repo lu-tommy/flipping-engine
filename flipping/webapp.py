@@ -13,7 +13,7 @@ from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import backtest, db, engine, tracker
+from . import backtest, db, engine, portfolio, tracker
 from .cli import parse_gp
 from .suggestion import AccountOffer, AccountState, HeldItem, suggest
 
@@ -65,6 +65,15 @@ def api_backtest_run(cash: str = "10m", top: int = Query(15, le=40),
         return backtest.run(conn, cash=parse_gp(cash), top=top, capture=capture)
     finally:
         conn.close()
+
+
+@app.get("/api/portfolio")
+def api_portfolio(cash: str = "10m", slots: int = Query(8, le=8), f2p: bool = False,
+                  max_rt: float | None = None, min_profit: str = "0"):
+    """How to deploy the whole cash stack across GE slots right now."""
+    return _with_conn(lambda c: portfolio.plan(
+        c, cash=parse_gp(cash), slots=slots, f2p_only=f2p,
+        max_roundtrip_minutes=max_rt, min_profit=parse_gp(min_profit)))
 
 
 class OfferIn(BaseModel):
