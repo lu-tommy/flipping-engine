@@ -39,9 +39,19 @@ Ingestion runs every 5 minutes via launchd
 ## Roadmap
 
 1. ~~Ingestion + heuristic ranker v1~~ (done)
-2. ~~Timeseries stability scoring + backtest harness~~ (done) —
-   `CAPTURE_FRACTION` calibrated to 0.03 from first backtest (was 0.10;
-   real roundtrips ran 3.6x slower). Re-calibrate as snapshot history grows.
+2. ~~Timeseries stability scoring + backtest harness~~ (done) — the first
+   backtest showed real roundtrips running ~3.6x slower than predicted, so
+   `CAPTURE_FRACTION` was cut 0.10 -> 0.03 and the median actual/predicted
+   ratio came out at 1.0.
+
+   **That calibration was later found to be wrong, and is no longer in effect.**
+   It conflated two separate effects: how much volume an offer captures once
+   price reaches it, and how long price takes to get there at all. Most of the
+   measured delay was the second. v3 models the waiting explicitly via touch
+   fractions, so capture is back at **0.10** — see the comment above
+   `CAPTURE_FRACTION` in `flipping/engine.py`, which is authoritative. Real
+   fills logged through the tracker are the intended calibrator; none have been
+   recorded yet.
 3. ~~Suggestion API service~~ (done) — `POST /api/suggestion`: full account
    state (cash, open offers, held inventory) in → single
    abort/sell/buy/wait action out. Ranker uses backtest-measured per-item
