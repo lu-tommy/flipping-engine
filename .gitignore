@@ -1,9 +1,18 @@
 .venv/
-prices.db
 __pycache__/
-*.pyc
+*.py[cod]
+
+# The snapshot database and every variant of it: backups, recovery output and
+# the corrupt original are all multi-gigabyte. A bare `prices.db` did not match
+# `prices.db.corrupt-20260905`, and `git add -A` swept in 6.3GB.
+prices.db*
+*.sqlite3
 
 # gradle
 runelite-plugin/build/
 runelite-plugin/.gradle/
+
 logs/
+*.log
+recover.err
+.DS_Store

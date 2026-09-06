@@ -140,3 +140,45 @@ def insert_bucket(conn: sqlite3.Connection, table: str, bucket_ts: int,
     conn.executemany(f"INSERT OR IGNORE INTO {table} VALUES (?,?,?,?,?,?)", rows)
     conn.commit()
     return len(rows)
+
+# Retention. The snapshot log is append-only and unbounded: it reached 73M rows
+# and 6.3GB in two months, which is what let a corruption go unnoticed for weeks
+# -- nobody scans a table that size casually.
+#
+# The retained windows are set by what the code ACTUALLY reads, which is far
+# less than what was kept:
+#
+#   latest_snapshots  every read is `WHERE fetched_at = (SELECT MAX(...))`.
+#                     73 million rows existed to serve one. engine, suggestion,
+#                     tracker and webapp all do this and nothing reads history.
+#   bucket_5m         engine reads `ORDER BY bucket_ts DESC LIMIT 6` -- thirty
+#                     minutes. A month is kept for headroom.
+#   bucket_1h         the trailing series the ranker actually reasons over, and
+#                     small (under 4M rows). Kept in full.
+#
+# Deliberately conservative against those numbers: days, not hours, so a future
+# feature that wants a little history is not immediately blocked.
+RETENTION_DAYS = {
+    "latest_snapshots": 2,
+    "bucket_5m": 30,
+}
+
+
+def prune(conn: sqlite3.Connection, days: dict[str, int] | None = None,
+          vacuum: bool = False) -> dict[str, int]:
+    """Delete rows past the retention window. Returns rows removed per table."""
+    import time as _t
+    policy = days or RETENTION_DAYS
+    now = int(_t.time())
+    removed: dict[str, int] = {}
+    for table, keep_days in policy.items():
+        column = "fetched_at" if table == "latest_snapshots" else "bucket_ts"
+        cutoff = now - keep_days * 86400
+        cur = conn.execute(f"DELETE FROM {table} WHERE {column} < ?", (cutoff,))
+        removed[table] = cur.rowcount
+    conn.commit()
+    if vacuum:
+        # VACUUM cannot run inside a transaction and rewrites the whole file,
+        # so it is opt-in rather than part of every prune.
+        conn.execute("VACUUM")
+    return removed

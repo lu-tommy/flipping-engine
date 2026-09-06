@@ -31,6 +31,27 @@ def cmd_ingest(args) -> None:
     print(f"ingested: {stats}")
 
 
+def cmd_prune(args) -> None:
+    conn = db.connect()
+    if args.dry_run:
+        import time as _t
+        now = int(_t.time())
+        for table, keep in db.RETENTION_DAYS.items():
+            column = "fetched_at" if table == "latest_snapshots" else "bucket_ts"
+            cutoff = now - keep * 86400
+            n = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {column} < ?", (cutoff,)
+            ).fetchone()[0]
+            total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            print(f"{table}: would delete {n:,} of {total:,} (keep {keep}d)")
+        return
+    removed = db.prune(conn, vacuum=args.vacuum)
+    for table, n in removed.items():
+        print(f"{table}: deleted {n:,}")
+    if args.vacuum:
+        print("vacuumed")
+
+
 def cmd_top(args) -> None:
     conn = db.connect(args.db)
     flips, rejected = engine.stable_flips(conn, cash=parse_gp(args.cash),
@@ -96,6 +117,12 @@ def main() -> None:
     top.add_argument("--max-rt", type=float, default=None, metavar="MINUTES",
                      help="quick-flip mode: only items with roundtrip under this")
 
+    pr = sub.add_parser("prune", help="apply the retention policy to the snapshot tables")
+    pr.add_argument("--vacuum", action="store_true",
+                    help="reclaim the freed space (rewrites the whole file; slow)")
+    pr.add_argument("--dry-run", action="store_true",
+                    help="report what would be deleted without deleting it")
+
     bt = sub.add_parser("backtest", help="replay flips against recent timeseries history")
     bt.add_argument("--cash", default="10m")
     bt.add_argument("--top", type=int, default=20, help="how many top-ranked items to test")
@@ -103,7 +130,8 @@ def main() -> None:
                     help="assumed fraction of bucket volume our offer captures")
 
     args = p.parse_args()
-    {"ingest": cmd_ingest, "top": cmd_top, "backtest": cmd_backtest}[args.command](args)
+    {"ingest": cmd_ingest, "top": cmd_top, "backtest": cmd_backtest,
+     "prune": cmd_prune}[args.command](args)
 
 
 if __name__ == "__main__":

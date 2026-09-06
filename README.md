@@ -72,3 +72,38 @@ price page.
 ```sh
 .venv/bin/python -m unittest discover -s tests
 ```
+
+## Retention
+
+The snapshot log is append-only. It reached **73M rows and 6.3 GB in two
+months**, which is what let a database corruption sit unnoticed for weeks —
+nobody casually scans a table that size.
+
+The retained windows are set by what the code actually reads, which turned out
+to be far less than what was being kept:
+
+| Table | Kept | What reads it |
+|---|---|---|
+| `latest_snapshots` | 2 days | every read is `WHERE fetched_at = (SELECT MAX(...))` — 73M rows existed to serve one |
+| `bucket_5m` | 30 days | `ORDER BY bucket_ts DESC LIMIT 6` — thirty minutes |
+| `bucket_1h` | everything | the trailing series the ranker reasons over, and small |
+
+```sh
+python -m flipping.cli prune --dry-run   # report only
+python -m flipping.cli prune --vacuum    # delete and reclaim
+```
+
+Runs weekly via `com.tommylu.flipping-prune`. First run took the database from
+**6.3 GB to 893 MB**.
+
+## A note on the calibration figure
+
+The backtest's `median_actual_vs_predicted_roundtrip` was measured at ~1.03 on
+the pre-recovery database and sits at **0.57–0.67 across four runs on the
+repaired one**. The difference is not noise: `engine.py` selects candidates
+partly from `bucket_5m`, that table was the corrupted one, and a different
+candidate set produces a different measurement.
+
+So the current honest reading is that **round trips complete roughly a third
+faster than the ranker predicts**, and `CAPTURE_FRACTION` is due another look on
+clean data. The earlier 1.03 should not be quoted.
