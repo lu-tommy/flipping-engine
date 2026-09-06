@@ -104,6 +104,38 @@ repaired one**. The difference is not noise: `engine.py` selects candidates
 partly from `bucket_5m`, that table was the corrupted one, and a different
 candidate set produces a different measurement.
 
-So the current honest reading is that **round trips complete roughly a third
-faster than the ranker predicts**, and `CAPTURE_FRACTION` is due another look on
-clean data. The earlier 1.03 should not be quoted.
+So round trips complete roughly a third faster than the ranker predicts. The
+earlier 1.03 should not be quoted.
+
+### The calibration loop does not currently close
+
+Trying to re-derive `CAPTURE_FRACTION` on the clean database exposed a defect in
+the harness itself.
+
+`backtest --capture` feeds only `simulate_entry`, which produces the *measured*
+roundtrip. The *predicted* roundtrip comes from `rank_flips`, which reads the
+module constant. So the flag moves the numerator of the ratio and leaves the
+denominator fixed — and the note in `backtest.py` ("multiply `CAPTURE_FRACTION`
+by this to calibrate") describes a procedure this harness cannot carry out.
+Sweeping the flag alone drives the ratio *down*, away from 1.0.
+
+`CAPTURE_FRACTION` now reads `FLIPPING_CAPTURE` from the environment so both
+sides can be swept together. Doing that:
+
+| capture (both sides) | fill rate | median actual / predicted |
+|---|---|---|
+| 0.06 | 0.218 | 0.431 |
+| 0.10 | 0.415 | 0.751 |
+| 0.16 | 0.555 | 0.710 |
+| 0.24 | 0.640 | 0.683 |
+
+**The ratio plateaus near 0.7 and is essentially insensitive to the constant
+above ~0.10.** So the residual 30% over-prediction is not a capture problem at
+all, and no value of `CAPTURE_FRACTION` drives the ratio to 1. The remaining
+suspects are the touch-fraction term, the `MIN_ROUNDTRIP_HOURS` floor, and the
+simulation's bucket discretisation.
+
+The honest position: **this project measures its own predictions and cannot yet
+correct them.** The loop is half-built. That is worth stating plainly, because
+the earlier 1.03 reading made it look closed when it was a coincidence on
+corrupt data.

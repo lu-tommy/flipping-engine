@@ -16,6 +16,7 @@ Guards against the classic data traps:
   - too-good-to-be-true margins (usually a crash in progress or manipulation)
 """
 
+import os
 import statistics
 import time
 from dataclasses import dataclass, field
@@ -28,7 +29,14 @@ from .ge_tax import flip_margin
 # effects: the backtest's slowness came mostly from waiting for price to cross
 # our quotes, which v3 now models explicitly via touch fractions — so capture
 # returns to 0.10. Real fills logged via the tracker are the true calibrator.
-CAPTURE_FRACTION = 0.10
+# Overridable so the constant and the backtest's simulation can be swept
+# together. They are the SAME physical quantity, and calibrating requires both
+# sides to move: the ranker's predicted roundtrip scales with this constant,
+# while `backtest --capture` scales the simulated actual. Moving only one moves
+# only one half of the ratio, which is why the old note above ("multiply
+# CAPTURE_FRACTION by this to calibrate") described a procedure the harness
+# could not actually carry out.
+CAPTURE_FRACTION = float(os.environ.get("FLIPPING_CAPTURE", "0.10"))
 # v3 percentile pricing: quote near the edges of the recent price
 # distribution — the spread IS the flip profit — and account for the waiting
 # via touch fractions instead of surrendering margin. p25 of lows ~= the
